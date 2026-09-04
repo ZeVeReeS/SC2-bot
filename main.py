@@ -29,7 +29,7 @@ CONFIDENCE_LEVEL = 0.7
 CLICK_PAUSE = 0.1
 
 # Пауза между проходами сканирования экрана (сек)
-PASS_PAUSE = 0.3
+PASS_PAUSE = 1
 
 # Клавиша аварийной остановки скрипта
 STOP_KEY = 'esc'
@@ -38,8 +38,8 @@ STOP_KEY = 'esc'
 # Раз в SPEED_CYCLE_INTERVAL секунд скрипт нажимает левую стрелку (уменьшить
 # скорость) 2 раза, ждёт SPEED_DOWN_DURATION секунд, затем нажимает правую
 # стрелку (увеличить скорость обратно) тоже 2 раза.
-SPEED_CYCLE_INTERVAL = 30
-SPEED_DOWN_DURATION = 5
+SPEED_CYCLE_INTERVAL = 60
+SPEED_DOWN_DURATION = 1
 ARROW_CLICK_PAUSE = 0.3
 
 # --- Восстановление после краша игры ---
