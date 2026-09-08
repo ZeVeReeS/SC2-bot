@@ -1,58 +1,111 @@
+# Установка зависимостей перед запуском:
+#   pip install pyautogui keyboard mss numpy opencv-python
+
 import pyautogui
 import time
 import os
 import keyboard
+import mss
+import cv2
+import numpy as np
 
 # Папка, где лежит сам скрипт — картинки ищем рядом с ним,
 # независимо от того, из какой директории запущен python
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Имена файлов-шаблонов (полный путь, чтобы работало из любой рабочей директории)
-CLOCK_IMG = os.path.join(SCRIPT_DIR, 'clock.png')
-RED_SKIP_IMG = os.path.join(SCRIPT_DIR, 'red_skip.png')
-GREEN_START_IMG = os.path.join(SCRIPT_DIR, 'green_start.png')
-BLUE_BTN_IMG = os.path.join(SCRIPT_DIR, 'blue_btn.png')
-LEFT_ARROW_IMG = os.path.join(SCRIPT_DIR, 'left_arrow.png')
-RIGHT_ARROW_IMG = os.path.join(SCRIPT_DIR, 'right_arrow.png')
+# Все шаблоны теперь лежат в подпапке images/ рядом со скриптом.
+# Переместите все .png файлы туда.
+IMAGES_DIR = os.path.join(SCRIPT_DIR, 'images')
+
+CLOCK_IMG = os.path.join(IMAGES_DIR, 'clock.png')
+RED_SKIP_IMG = os.path.join(IMAGES_DIR, 'red_skip.png')
+GREEN_START_IMG = os.path.join(IMAGES_DIR, 'green_start.png')
+BLUE_BTN_IMG = os.path.join(IMAGES_DIR, 'blue_btn.png')
+LEFT_ARROW_IMG = os.path.join(IMAGES_DIR, 'left_arrow.png')
+RIGHT_ARROW_IMG = os.path.join(IMAGES_DIR, 'right_arrow.png')
 
 # Шаблоны для восстановления после краша игры (окно "Перезапустить игру")
-RESTART_OPTION_IMG = os.path.join(SCRIPT_DIR, 'restart_option.png')
-OK_BUTTON_IMG = os.path.join(SCRIPT_DIR, 'ok_button.png')
-GOLD_BARREL_IMG = os.path.join(SCRIPT_DIR, 'gold_barrel.png')
-GREEN_BOOK_IMG = os.path.join(SCRIPT_DIR, 'green_book.png')
-GG_ICON_IMG = os.path.join(SCRIPT_DIR, 'gg_icon.png')
+RESTART_OPTION_IMG = os.path.join(IMAGES_DIR, 'restart_option.png')
+OK_BUTTON_IMG = os.path.join(IMAGES_DIR, 'ok_button.png')
+GOLD_BARREL_IMG = os.path.join(IMAGES_DIR, 'gold_barrel.png')
+GREEN_BOOK_IMG = os.path.join(IMAGES_DIR, 'green_book.png')
+GG_ICON_IMG = os.path.join(IMAGES_DIR, 'gg_icon.png')
+
+# Шаблоны, которые нужны на каждом проходе — сканируются ОДНИМ снимком экрана
+PRIMARY_TEMPLATES = [OK_BUTTON_IMG, BLUE_BTN_IMG, RED_SKIP_IMG]
+# Эти ищем вторым снимком, только если на первом нашлись красные кнопки
+SECONDARY_TEMPLATES = [CLOCK_IMG, GREEN_START_IMG]
+
+# Точка на экране, где скроллим колесом мыши перед ускорением после восстановления
+# (центр экрана для разрешения 1920x1080)
+SCROLL_X = 960
+SCROLL_Y = 619
+
+# Насколько сильно скроллить вниз (величина в "щелчках" колеса)
+SCROLL_AMOUNT = 230
 
 # Настройка точности поиска (от 0.0 до 1.0)
 CONFIDENCE_LEVEL = 0.7
 
 # Пауза между обычными кликами (сек)
-CLICK_PAUSE = 0.1
+CLICK_PAUSE = 0.03
 
 # Пауза между проходами сканирования экрана (сек)
-PASS_PAUSE = 1
+PASS_PAUSE = 0.05
 
 # Клавиша аварийной остановки скрипта
 STOP_KEY = 'esc'
 
+# --- Область экрана для захвата (ускоряет скриншот и распознавание) ---
+# None = весь основной монитор. Если окно игры занимает не весь экран,
+# подставь реальные координаты: {"left": X, "top": Y, "width": W, "height": H}
+# Чем меньше область — тем быстрее скриншот и сравнение шаблонов.
+CAPTURE_REGION = None
+
 # --- Периодический цикл скорости (профилактика краша GG) ---
-# Раз в SPEED_CYCLE_INTERVAL секунд скрипт нажимает левую стрелку (уменьшить
-# скорость) 2 раза, ждёт SPEED_DOWN_DURATION секунд, затем нажимает правую
-# стрелку (увеличить скорость обратно) тоже 2 раза.
 SPEED_CYCLE_INTERVAL = 60
 SPEED_DOWN_DURATION = 1
 ARROW_CLICK_PAUSE = 0.3
 
 # --- Восстановление после краша игры ---
-RECOVERY_STEP_TIMEOUT = 15     # сколько ждать появления каждого элемента цепочки (сек)
-RECOVERY_STEP_POLL = 0.5       # с какой частотой проверять экран во время ожидания
-POST_RESTART_DELAY = 4         # ожидание загрузки игры после нажатия Ok (сек)
-GG_LONG_PRESS_DURATION = 2     # сколько секунд удерживать иконку GG
+RECOVERY_STEP_TIMEOUT = 15
+RECOVERY_STEP_POLL = 0.5
+POST_RESTART_DELAY = 4
+GG_LONG_PRESS_DURATION = 2
 
-# Сколько раз пересканировать экран за одну проверку, чтобы не терять
-# кнопки из-за анимации/эффектов, которые могут "смазать" один конкретный кадр.
-# Уменьшено с 3 до 2 для скорости — при новых проблемах можно вернуть к 3.
-SCAN_ATTEMPTS = 2
-SCAN_ATTEMPT_DELAY = 0.1
+# Сколько раз пересканировать экран за одну проверку (устойчивость к анимации).
+SCAN_ATTEMPTS = 1
+SCAN_ATTEMPT_DELAY = 0.05
+
+# Кэш загруженных с диска шаблонов (уже в формате numpy/OpenCV BGR),
+# чтобы не читать и не конвертировать файлы заново на каждом сканировании
+_TEMPLATE_CACHE = {}
+
+# Единственный экземпляр mss на весь скрипт — пересоздавать его на каждый кадр дорого
+_sct = mss.mss()
+
+
+def _load_template(path):
+    """Загружает шаблон с диска через OpenCV один раз и кэширует в памяти."""
+    if path not in _TEMPLATE_CACHE:
+        template = cv2.imread(path, cv2.IMREAD_COLOR)
+        if template is None:
+            raise FileNotFoundError(f"Не удалось загрузить шаблон: {path}")
+        _TEMPLATE_CACHE[path] = template
+    return _TEMPLATE_CACHE[path]
+
+
+def take_screenshot_bgr():
+    """
+    Быстрый снимок экрана через mss, сразу в виде numpy-массива в формате
+    BGR (родной формат OpenCV) — без промежуточной конвертации через PIL,
+    которая раньше выполнялась на каждом кадре.
+    Если CAPTURE_REGION задан — захватывается только эта область.
+    """
+    monitor = CAPTURE_REGION if CAPTURE_REGION is not None else _sct.monitors[1]
+    raw = _sct.grab(monitor)
+    img_bgra = np.array(raw)
+    return cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2BGR)
 
 
 class StoppedByUser(Exception):
@@ -60,43 +113,88 @@ class StoppedByUser(Exception):
     pass
 
 
+# Флаг остановки, устанавливается обработчиком нажатия клавиши (событие,
+# а не опрос) — так короткое нажатие Esc не теряется между проверками.
+_stop_requested = False
+
+
+def _on_stop_key_pressed(event):
+    global _stop_requested
+    _stop_requested = True
+
+
 def check_stop():
-    """Проверяет, не нажата ли клавиша остановки, и если да — прерывает скрипт."""
-    if keyboard.is_pressed(STOP_KEY):
+    """Проверяет, не был ли запрошен останов, и если да — прерывает скрипт."""
+    if _stop_requested:
         raise StoppedByUser()
 
 
 def sleep_interruptible(seconds):
-    """Спит указанное время, но проверяет ESC каждые 0.1 сек, чтобы реагировать мгновенно."""
+    """Спит указанное время, но проверяет ESC, чтобы реагировать быстро."""
+    if seconds <= 0.05:
+        check_stop()
+        time.sleep(seconds)
+        return
     end_time = time.time() + seconds
     while time.time() < end_time:
         check_stop()
-        time.sleep(0.1)
+        time.sleep(0.05)
 
 
-def get_unique_targets(image_path, tolerance=20):
+def _find_matches(screen_bgr, template_bgr, confidence, tolerance=20):
     """
-    Находит все совпадения на экране и удаляет дубликаты координат-соседей.
-    Делает несколько быстрых попыток подряд и объединяет результаты —
-    если анимация "смазала" кнопку на одном кадре, она может поймать её на другом.
+    Ищет все вхождения шаблона в уже сделанном скриншоте через
+    cv2.matchTemplate (быстрая C-реализация вместо pyautogui.locateAll).
+    Возвращает список уникальных центров совпадений, отсортированных
+    по убыванию похожести (простая non-max suppression по расстоянию).
     """
-    unique_points = []
+    h, w = template_bgr.shape[:2]
+    try:
+        result = cv2.matchTemplate(screen_bgr, template_bgr, cv2.TM_CCOEFF_NORMED)
+    except cv2.error:
+        return []
+
+    ys, xs = np.where(result >= confidence)
+    if len(xs) == 0:
+        return []
+
+    # Сортируем совпадения по убыванию "похожести", чтобы при слиянии
+    # соседних точек в одну оставалась самая уверенная из них.
+    candidates = sorted(zip(xs, ys, result[ys, xs]), key=lambda c: -c[2])
+
+    points = []
+    for x, y, _score in candidates:
+        cx, cy = x + w // 2, y + h // 2
+        if not any(abs(cx - px) < tolerance and abs(cy - py) < tolerance for px, py in points):
+            points.append((cx, cy))
+    return points
+
+
+def scan_batch(template_paths, tolerance=20):
+    """
+    Делает SCAN_ATTEMPTS снимков экрана (а не один на шаблон!) и на каждом
+    снимке ищет СРАЗУ ВСЕ переданные шаблоны.
+    Возвращает dict {путь_к_шаблону: [(x, y), ...]}.
+    """
+    results = {p: [] for p in template_paths}
 
     for attempt in range(SCAN_ATTEMPTS):
-        try:
-            matches = list(pyautogui.locateAllOnScreen(image_path, confidence=CONFIDENCE_LEVEL))
-        except Exception:
-            matches = []
-
-        for m in matches:
-            center = pyautogui.center(m)
-            if not any(abs(center.x - u[0]) < tolerance and abs(center.y - u[1]) < tolerance for u in unique_points):
-                unique_points.append((center.x, center.y))
-
+        screen_bgr = take_screenshot_bgr()
+        for p in template_paths:
+            template = _load_template(p)
+            found = _find_matches(screen_bgr, template, CONFIDENCE_LEVEL, tolerance)
+            for pt in found:
+                if not any(abs(pt[0] - e[0]) < tolerance and abs(pt[1] - e[1]) < tolerance for e in results[p]):
+                    results[p].append(pt)
         if attempt < SCAN_ATTEMPTS - 1:
             time.sleep(SCAN_ATTEMPT_DELAY)
 
-    return unique_points
+    return results
+
+
+def get_unique_targets(image_path, tolerance=20):
+    """Находит все совпадения ОДНОГО шаблона на экране (обёртка над scan_batch)."""
+    return scan_batch([image_path], tolerance)[image_path]
 
 
 def points_near(points, ref_x, ref_y, x_tol, y_tol):
@@ -123,12 +221,6 @@ def click_arrow_twice(image_path, description):
 
 
 def do_speed_cycle():
-    """
-    Раз в SPEED_CYCLE_INTERVAL секунд: снижаем скорость (левая стрелка x2),
-    ждём SPEED_DOWN_DURATION секунд, возвращаем скорость обратно (правая стрелка x2).
-    Это профилактика — периодическая просадка скорости, чтобы игра не крашилась
-    от постоянной работы на завышенном множителе.
-    """
     print(f"\n--- Цикл скорости (каждые {SPEED_CYCLE_INTERVAL} сек) ---")
     ok = click_arrow_twice(LEFT_ARROW_IMG, "левая стрелка (уменьшить скорость)")
     if not ok:
@@ -142,7 +234,7 @@ def do_speed_cycle():
 
 
 def wait_and_click_one(image_path, description, timeout=RECOVERY_STEP_TIMEOUT):
-    """Ждёт появления элемента на экране до timeout секунд и кликает по нему. Возвращает True/False."""
+    """Ждёт появления элемента на экране до timeout секунд и кликает по нему."""
     start = time.time()
     while time.time() - start < timeout:
         check_stop()
@@ -165,15 +257,45 @@ def long_press(x, y, duration):
     pyautogui.mouseUp(x=x, y=y)
 
 
+def press_gg_speed_sequence():
+    """
+    После восстановления после краша: сначала слегка скроллим вниз по центру
+    экрана (чтобы открылись элементы управления скоростью), затем жмём
+    двойную стрелку ускорения GG 2 раза подряд, и через 1 секунду —
+    двойную стрелку замедления 1 раз.
+    """
+    print(f"-> Прокручиваем колесом мыши вниз в точке ({SCROLL_X}, {SCROLL_Y})")
+    pyautogui.moveTo(SCROLL_X, SCROLL_Y)
+    pyautogui.scroll(-SCROLL_AMOUNT)
+    sleep_interruptible(0.3)  # даём интерфейсу время среагировать на скролл
+
+    targets = get_unique_targets(RIGHT_ARROW_IMG)
+    if not targets:
+        print("-> Двойная стрелка ускорения не найдена, пропускаем")
+        return
+
+    x, y = targets[0]
+    for i in range(2):
+        check_stop()
+        print(f"-> Клик по двойной стрелке ускорения ({x}, {y}) [{i + 1}/2]")
+        pyautogui.click(x, y)
+        sleep_interruptible(CLICK_PAUSE)
+
+    sleep_interruptible(0.1)
+
+    targets = get_unique_targets(LEFT_ARROW_IMG)
+    if not targets:
+        print("-> Двойная стрелка замедления не найдена, пропускаем")
+        return
+
+    x, y = targets[0]
+    print(f"-> Клик по двойной стрелке замедления ({x}, {y})")
+    pyautogui.click(x, y)
+    sleep_interruptible(CLICK_PAUSE)
+
+
 def try_crash_recovery():
-    """
-    Проверяет, не появилось ли окно 'Перезапустить игру' (последствие краша GG),
-    и если да — проходит всю цепочку восстановления:
-    Перезапустить игру -> Ok -> золотая бочка -> зелёная книга ->
-    долгое нажатие на GG -> двойная стрелка.
-    Возвращает True, если восстановление запускалось (чтобы вызывающий код
-    пропустил обычный проход квестов в этой итерации и начал заново).
-    """
+    """Проверяет окно 'Перезапустить игру' и проходит цепочку восстановления, если нужно."""
     targets = get_unique_targets(RESTART_OPTION_IMG)
     if not targets:
         return False
@@ -202,36 +324,39 @@ def try_crash_recovery():
     else:
         print("-> Иконка GG не найдена, пропускаем долгое нажатие")
 
-    wait_and_click_one(RIGHT_ARROW_IMG, "двойная стрелка")
+    press_gg_speed_sequence()
 
     print("=== Восстановление завершено — возобновляем сбор квестов ===\n")
     return True
 
 
-def claim_all_ready_blue_buttons():
+def run_pass():
     """
-    Каждый проход ищет ВСЕ синие кнопки на экране (без привязки к конкретной строке)
-    и сразу кликает по ним. Никакого ожидания — просто забираем то, что уже готово.
+    Один проход по экрану. Сначала одним снимком проверяем Ok/синюю/красную
+    кнопки — это самый частый случай. Часы и зелёную кнопку ищем вторым
+    снимком, и только если на экране вообще есть красные кнопки.
     """
-    blue_buttons = get_unique_targets(BLUE_BTN_IMG)
+    check_stop()
+
+    primary = scan_batch(PRIMARY_TEMPLATES)
+
+    ok_buttons = primary[OK_BUTTON_IMG]
+    blue_buttons = primary[BLUE_BTN_IMG]
+    red_buttons = primary[RED_SKIP_IMG]
+
+    # Шаг 0: если где-то всплыла кнопка Ok — сразу жмём её.
+    for ox, oy in ok_buttons:
+        check_stop()
+        print(f"Найдена кнопка 'Ok' ({ox}, {oy}) — клик")
+        pyautogui.click(ox, oy)
+        sleep_interruptible(CLICK_PAUSE)
+
+    # Шаг 1: забираем все готовые синие кнопки — без ожидания и без привязки к строке.
     for bx, by in blue_buttons:
         check_stop()
         print(f"Найдена готовая синяя кнопка ({bx}, {by}) — клик")
         pyautogui.click(bx, by)
         sleep_interruptible(CLICK_PAUSE)
-    return len(blue_buttons)
-
-
-def run_pass():
-    """Один проход по экрану: сначала забираем готовые награды, потом обрабатываем квесты."""
-    check_stop()
-
-    # Шаг 1: всегда сначала проверяем и забираем ВСЕ готовые синие кнопки,
-    # независимо от того, к какой строке они относятся — без ожидания.
-    claim_all_ready_blue_buttons()
-
-    check_stop()
-    red_buttons = get_unique_targets(RED_SKIP_IMG)
 
     if not red_buttons:
         print("Не найдено ни одной красной кнопки.")
@@ -240,10 +365,10 @@ def run_pass():
     red_buttons.sort(key=lambda item: item[1])
     print(f"Обнаружено квестов на экране: {len(red_buttons)}")
 
-    # Сканируем часы и зелёные кнопки ОДИН раз на весь проход,
-    # а не заново для каждой строки — это главный источник ускорения.
-    clocks = get_unique_targets(CLOCK_IMG)
-    green_buttons = get_unique_targets(GREEN_START_IMG)
+    # Часы и зелёную кнопку ищем только теперь, когда знаем, что есть что обрабатывать.
+    secondary = scan_batch(SECONDARY_TEMPLATES)
+    clocks = secondary[CLOCK_IMG]
+    green_buttons = secondary[GREEN_START_IMG]
 
     for red_x, red_y in red_buttons:
         check_stop()
@@ -251,15 +376,11 @@ def run_pass():
         row_clocks = points_near(clocks, red_x, red_y, x_tol=300, y_tol=70)
 
         if not row_clocks:
-            # Часов нет — жмём красную «Пропустить»
             print(f"Строка без часов (Y: {red_y}). Нажимаем 'Пропустить' ({red_x}, {red_y})")
             pyautogui.click(red_x, red_y)
             sleep_interruptible(CLICK_PAUSE)
             continue
 
-        # Часы есть — жмём зелёную «Начать» и идём дальше, НЕ дожидаясь результата.
-        # Синяя кнопка для этого квеста будет подхвачена автоматически
-        # на одном из следующих проходов через claim_all_ready_blue_buttons().
         print(f"Найдена строка с ЧАСАМИ (Y: {red_y}).")
         row_green = points_near(green_buttons, red_x, red_y, x_tol=300, y_tol=25)
         if not row_green:
@@ -273,9 +394,30 @@ def run_pass():
 
 
 def main():
+    global _stop_requested
+    _stop_requested = False
+    keyboard.on_press_key(STOP_KEY, _on_stop_key_pressed)
+
+    # Отключаем встроенные накладные расходы pyautogui:
+    # FAILSAFE — проверка угла экрана перед каждым действием,
+    # PAUSE — автоматическая пауза 0.1 сек ПОСЛЕ каждого вызова pyautogui.*
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE = 0
+
     print("Скрипт запущен. Перейдите в окно игры. Поиск начнется через 3 секунды...")
     print(f"Нажмите {STOP_KEY.upper()} в любой момент, чтобы остановить скрипт.")
     time.sleep(3)
+
+    # Прогружаем все шаблоны в память сразу, чтобы первый проход тоже был быстрым
+    all_templates = set(PRIMARY_TEMPLATES + SECONDARY_TEMPLATES + [
+        LEFT_ARROW_IMG, RIGHT_ARROW_IMG, RESTART_OPTION_IMG,
+        OK_BUTTON_IMG, GOLD_BARREL_IMG, GREEN_BOOK_IMG, GG_ICON_IMG
+    ])
+    for path in all_templates:
+        try:
+            _load_template(path)
+        except Exception as e:
+            print(f"Предупреждение: не удалось загрузить шаблон {path}: {e}")
 
     last_speed_cycle = time.time()
 
