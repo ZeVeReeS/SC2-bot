@@ -1,4 +1,5 @@
 Entirely vibecoded/Полностью сделано через ии
+
 P.S. preferrably set game language to russian
 
 ENG
