@@ -8,6 +8,8 @@ import keyboard
 import mss
 import cv2
 import numpy as np
+import ctypes
+from ctypes import wintypes
 
 # Папка, где лежит сам скрипт — картинки ищем рядом с ним,
 # независимо от того, из какой директории запущен python
@@ -36,10 +38,9 @@ PRIMARY_TEMPLATES = [OK_BUTTON_IMG, BLUE_BTN_IMG, RED_SKIP_IMG]
 # Эти ищем вторым снимком, только если на первом нашлись красные кнопки
 SECONDARY_TEMPLATES = [CLOCK_IMG, GREEN_START_IMG]
 
-# Точка внутри окна игры, где скроллим колесом мыши перед ускорением
-# после восстановления. Координаты указаны в экранных пикселях.
-SCROLL_X = 684
-SCROLL_Y = 370
+# Точка внутри области игры, где скроллим колесом мыши после восстановления.
+SCROLL_X = 960
+SCROLL_Y = 607
 
 # Насколько сильно скроллить вниз (величина в "щелчках" колеса)
 SCROLL_AMOUNT = 230
@@ -57,9 +58,14 @@ PASS_PAUSE = 0.01
 STOP_KEY = 'esc'
 
 # --- Область экрана для захвата (ускоряет скриншот и распознавание) ---
-# Окно игры на предоставленном снимке: x=485..883, y=0..740.
-# Координаты шаблонов автоматически возвращаются обратно в координаты экрана.
-CAPTURE_REGION = None
+# Верхний левый угол: (755, 288), нижний правый угол: (1166, 926).
+# Правая и нижняя границы не включаются, поэтому размер равен 411x638.
+CAPTURE_REGION = {
+    "left": 755,
+    "top": 288,
+    "width": 411,
+    "height": 638,
+}
 
 # --- Периодический цикл скорости (профилактика краша GG) ---
 SPEED_CYCLE_INTERVAL = 60
@@ -82,6 +88,39 @@ _TEMPLATE_CACHE = {}
 
 # Единственный экземпляр mss на весь скрипт — пересоздавать его на каждый кадр дорого
 _sct = mss.mss()
+
+
+def select_foreground_window():
+    """Запоминает границы активного окна и центр для последующих действий."""
+    global CAPTURE_REGION, SCROLL_X, SCROLL_Y
+
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        raise RuntimeError("Не удалось определить активное окно после таймера.")
+
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise RuntimeError("Не удалось получить границы активного окна.")
+
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        raise RuntimeError(
+            f"Активное окно имеет некорректный размер: {width}x{height}."
+        )
+
+    CAPTURE_REGION = {
+        "left": rect.left,
+        "top": rect.top,
+        "width": width,
+        "height": height,
+    }
+    SCROLL_X = rect.left + width // 2
+    SCROLL_Y = rect.top + height // 2
+    print(
+        f"Выбрано активное окно: x={rect.left}, y={rect.top}, "
+        f"размер={width}x{height}"
+    )
 
 
 def _load_template(path):
@@ -435,7 +474,7 @@ def main():
 
     print("Скрипт запущен. Перейдите в окно игры. Поиск начнется через 3 секунды...")
     print(f"Нажмите {STOP_KEY.upper()} в любой момент, чтобы остановить скрипт.")
-    time.sleep(3)
+    sleep_interruptible(3)
 
     # Прогружаем все шаблоны в память сразу, чтобы первый проход тоже был быстрым
     all_templates = set(PRIMARY_TEMPLATES + SECONDARY_TEMPLATES + [
