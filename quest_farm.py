@@ -36,10 +36,10 @@ PRIMARY_TEMPLATES = [OK_BUTTON_IMG, BLUE_BTN_IMG, RED_SKIP_IMG]
 # Эти ищем вторым снимком, только если на первом нашлись красные кнопки
 SECONDARY_TEMPLATES = [CLOCK_IMG, GREEN_START_IMG]
 
-# Точка на экране, где скроллим колесом мыши перед ускорением после восстановления
-# (центр экрана для разрешения 1920x1080)
-SCROLL_X = 960
-SCROLL_Y = 619
+# Точка внутри окна игры, где скроллим колесом мыши перед ускорением
+# после восстановления. Координаты указаны в экранных пикселях.
+SCROLL_X = 684
+SCROLL_Y = 370
 
 # Насколько сильно скроллить вниз (величина в "щелчках" колеса)
 SCROLL_AMOUNT = 230
@@ -57,9 +57,8 @@ PASS_PAUSE = 0.01
 STOP_KEY = 'esc'
 
 # --- Область экрана для захвата (ускоряет скриншот и распознавание) ---
-# None = весь основной монитор. Если окно игры занимает не весь экран,
-# подставь реальные координаты: {"left": X, "top": Y, "width": W, "height": H}
-# Чем меньше область — тем быстрее скриншот и сравнение шаблонов.
+# Окно игры на предоставленном снимке: x=485..883, y=0..740.
+# Координаты шаблонов автоматически возвращаются обратно в координаты экрана.
 CAPTURE_REGION = None
 
 # --- Периодический цикл скорости (профилактика краша GG) ---
@@ -77,8 +76,8 @@ GG_LONG_PRESS_DURATION = 2
 SCAN_ATTEMPTS = 1
 SCAN_ATTEMPT_DELAY = 0.01
 
-# Кэш загруженных с диска шаблонов (уже в формате numpy/OpenCV BGR),
-# чтобы не читать и не конвертировать файлы заново на каждом сканировании
+# Кэш шаблонов в оттенках серого: цвет не нужен для поиска, а grayscale
+# уменьшает объём данных для сопоставления в 3 раза.
 _TEMPLATE_CACHE = {}
 
 # Единственный экземпляр mss на весь скрипт — пересоздавать его на каждый кадр дорого
@@ -86,26 +85,23 @@ _sct = mss.mss()
 
 
 def _load_template(path):
-    """Загружает шаблон с диска через OpenCV один раз и кэширует в памяти."""
+    """Загружает и кэширует шаблон сразу в формате grayscale."""
     if path not in _TEMPLATE_CACHE:
-        template = cv2.imread(path, cv2.IMREAD_COLOR)
+        template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         if template is None:
             raise FileNotFoundError(f"Не удалось загрузить шаблон: {path}")
         _TEMPLATE_CACHE[path] = template
     return _TEMPLATE_CACHE[path]
 
 
-def take_screenshot_bgr():
+def take_screenshot_gray():
     """
-    Быстрый снимок экрана через mss, сразу в виде numpy-массива в формате
-    BGR (родной формат OpenCV) — без промежуточной конвертации через PIL,
-    которая раньше выполнялась на каждом кадре.
+    Делает снимок экрана и сразу переводит его в grayscale.
     Если CAPTURE_REGION задан — захватывается только эта область.
     """
     monitor = CAPTURE_REGION if CAPTURE_REGION is not None else _sct.monitors[1]
     raw = _sct.grab(monitor)
-    img_bgra = np.array(raw)
-    return cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2BGR)
+    return cv2.cvtColor(np.asarray(raw), cv2.COLOR_BGRA2GRAY)
 
 
 class StoppedByUser(Exception):
@@ -141,32 +137,46 @@ def sleep_interruptible(seconds):
         time.sleep(0.05)
 
 
-def _find_matches(screen_bgr, template_bgr, confidence, tolerance=20):
+def _find_matches(screen_gray, template_gray, confidence, tolerance=20):
     """
-    Ищет все вхождения шаблона в уже сделанном скриншоте через
-    cv2.matchTemplate (быстрая C-реализация вместо pyautogui.locateAll).
-    Возвращает список уникальных центров совпадений, отсортированных
-    по убыванию похожести (простая non-max suppression по расстоянию).
+    Ищет шаблон в grayscale-кадре. Локальные максимумы выделяются OpenCV,
+    поэтому тысячи пороговых пикселей не перебираются в Python.
     """
-    h, w = template_bgr.shape[:2]
+    h, w = template_gray.shape[:2]
+    if screen_gray.shape[0] < h or screen_gray.shape[1] < w:
+        return []
+
     try:
-        result = cv2.matchTemplate(screen_bgr, template_bgr, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
     except cv2.error:
         return []
 
-    ys, xs = np.where(result >= confidence)
-    if len(xs) == 0:
+    candidates_mask = result >= confidence
+    if not np.any(candidates_mask):
         return []
 
-    # Сортируем совпадения по убыванию "похожести", чтобы при слиянии
-    # соседних точек в одну оставалась самая уверенная из них.
-    candidates = sorted(zip(xs, ys, result[ys, xs]), key=lambda c: -c[2])
+    # Ищем один максимум в окрестности каждого совпадения.
+    kernel_size = max(3, tolerance * 2 + 1)
+    local_max = cv2.dilate(result, np.ones((kernel_size, kernel_size), np.uint8))
+    ys, xs = np.where(candidates_mask & (result >= local_max - 1e-6))
+    candidates = sorted(
+        zip(xs, ys, result[ys, xs]), key=lambda candidate: -candidate[2]
+    )
 
     points = []
     for x, y, _score in candidates:
         cx, cy = x + w // 2, y + h // 2
-        if not any(abs(cx - px) < tolerance and abs(cy - py) < tolerance for px, py in points):
+        if not any(
+            abs(cx - px) < tolerance and abs(cy - py) < tolerance
+            for px, py in points
+        ):
             points.append((cx, cy))
+
+    if CAPTURE_REGION is not None:
+        points = [
+            (x + CAPTURE_REGION["left"], y + CAPTURE_REGION["top"])
+            for x, y in points
+        ]
     return points
 
 
@@ -179,10 +189,10 @@ def scan_batch(template_paths, tolerance=20):
     results = {p: [] for p in template_paths}
 
     for attempt in range(SCAN_ATTEMPTS):
-        screen_bgr = take_screenshot_bgr()
+        screen_gray = take_screenshot_gray()
         for p in template_paths:
             template = _load_template(p)
-            found = _find_matches(screen_bgr, template, CONFIDENCE_LEVEL, tolerance)
+            found = _find_matches(screen_gray, template, CONFIDENCE_LEVEL, tolerance)
             for pt in found:
                 if not any(abs(pt[0] - e[0]) < tolerance and abs(pt[1] - e[1]) < tolerance for e in results[p]):
                     results[p].append(pt)
@@ -359,7 +369,6 @@ def run_pass():
         sleep_interruptible(CLICK_PAUSE)
 
     if not red_buttons:
-        print("Не найдено ни одной красной кнопки.")
         return
 
     red_buttons.sort(key=lambda item: item[1])
@@ -393,6 +402,26 @@ def run_pass():
         sleep_interruptible(CLICK_PAUSE)
 
 
+def scan_forever():
+    """Непрерывно сканирует экран, пока пользователь не нажмёт ESC."""
+    last_speed_cycle = time.time()
+
+    while True:
+        check_stop()
+
+        if try_crash_recovery():
+            sleep_interruptible(PASS_PAUSE)
+            continue
+
+        run_pass()
+
+        if time.time() - last_speed_cycle >= SPEED_CYCLE_INTERVAL:
+            do_speed_cycle()
+            last_speed_cycle = time.time()
+
+        sleep_interruptible(PASS_PAUSE)
+
+
 def main():
     global _stop_requested
     _stop_requested = False
@@ -419,23 +448,8 @@ def main():
         except Exception as e:
             print(f"Предупреждение: не удалось загрузить шаблон {path}: {e}")
 
-    last_speed_cycle = time.time()
-
     try:
-        while True:
-            check_stop()
-
-            if try_crash_recovery():
-                sleep_interruptible(PASS_PAUSE)
-                continue
-
-            run_pass()
-
-            if time.time() - last_speed_cycle >= SPEED_CYCLE_INTERVAL:
-                do_speed_cycle()
-                last_speed_cycle = time.time()
-
-            sleep_interruptible(PASS_PAUSE)
+        scan_forever()
     except StoppedByUser:
         print("Остановлено пользователем (ESC). Скрипт завершён.")
 
